@@ -7,6 +7,7 @@ using namespace OpenMesh;
 #include <iostream>
 #include <vector>
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 
 #include "Pair.h"
 
@@ -18,11 +19,16 @@ typedef OpenMesh::VertexHandle MyVertexHandle;
 typedef OpenMesh::FaceHandle MyFaceHandle;
 typedef Eigen::Vector3d MyVector3f;
 typedef std::vector<PairVertex> PointList;
+typedef Eigen::MatrixXd MyMatrixXf;
 
+/*** 稀疏矩阵 ***/
+typedef Eigen::SparseMatrix<double> MySMatrixXf;
 
 const unsigned int NR_MIN_PATCH_PER_LEVEL = 6;
-const unsigned int LEAF_NODE_MIN_NR = 10;
+const unsigned int LEAF_NODE_MIN_NR = 6;
 
+/*** blending 是否开启开关 ***/
+const bool BLENDING = true;
 
 #define CHKROPT( Option ) \
 	std::cout << "  provides " << #Option \
@@ -54,6 +60,13 @@ public:
 	FaceNode *next[ NR_MIN_PATCH_PER_LEVEL ];
 	std::vector<int> boundray; // 和各个patch之间共有的三角形index
 
+	/*** blending矩阵常量 Mv = e ***/
+	MySMatrixXf M;
+
+	/*** 保存边向量的index ***/
+	std::vector<Pair> edges_vector[NR_MIN_PATCH_PER_LEVEL];
+
+
 	FaceNode ()
 	{
 		for(int i = 0; i < NR_MIN_PATCH_PER_LEVEL; i++)
@@ -84,6 +97,8 @@ private:
 	void build_registration_pair();
 	void build_hierarchy_based_on_face(FaceNode *subroot, int level = 0);
 	void random_seed_point_helper(int, int *);
+
+	void pre_blending_process(FaceNode * subroot);
 
 	void release_facenode_help(FaceNode * &subroot);
 

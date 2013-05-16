@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <set>
 #include <fstream>
+#include <assert.h>
 #include "MsInterpolation.h"
 #include "LeafNodeInterpolation.h"
 #include "MultiRegistration.h"
@@ -99,6 +100,12 @@ void MsInterpolation::test()
 	build_registration_pair();
 
 	std::cout<<"Build Pair Done!\n";
+
+	if( BLENDING )
+	{
+		pre_blending_process(face_root);
+		std::cout<<"Pre_blending_process Done!\n";
+	}
 
 	build_interpolation(face_root, m_mesh, target_mesh, 0.75);
 		
@@ -268,14 +275,13 @@ void MsInterpolation::build_hierarchy_based_on_face( FaceNode *subroot, int leve
 						// 还未被使用
 						curr_node->idx.push_back( close_idx );
 						face_flag[ ridx[ close_idx ] ] = i;
+
 					}else
 					{
 						if( used != i)
 						{
 							// 邻近patch的三角形
 							curr_node->boundray.push_back( close_idx );
-
-
 						}
 					}
 
@@ -573,33 +579,214 @@ void MsInterpolation::build_interpolation( FaceNode *subroot, MyMesh &src_mesh, 
 	/***分配空间***/
 	int size = subroot->pts_index.size();
 	subroot->pts.assign(size, MyVector3f(0, 0, 0) );
-	std::vector<int> cnt;
 
-	cnt.assign( size, 0);
+	if( BLENDING )
+	{
+		int m = 0;
+		MyMatrixXf E;
+
+		E.resize(subroot->M.rows(), 3);
+
+		for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
+		{
+			FaceNode *node_i = subroot->next[i];
+			int nr_edges = subroot->edges_vector[i].size();
+
+			for (int j = 0; j !=  nr_edges; j++)
+			{
+				int g_from = subroot->edges_vector[i][j].a;
+				int g_to = subroot->edges_vector[i][j].b;
+
+				int n_from =node_i->r_idx[ g_from ];
+				int n_to = node_i->r_idx[ g_to ];
+
+				MyVector3f e = node_i->pts[n_from] - node_i->pts[n_to];
+
+				int from = subroot->r_idx[ g_from ];
+				int to = subroot->r_idx[ g_to ];
+
+				assert( subroot->M(m, from) == 1);
+				assert( subroot->M(m, to) == -1);
+
+				E(m, 0) = e(0);
+				E(m, 1) = e(1);
+				E(m, 2) = e(2);
+				m++;
+			}
+		}
+
+		E(m, 0) = 0;
+		E(m, 1) = 0;
+		E(m, 2) = 0;
+
+		Eigen::SimplicialCholesky<MySMatrixXf > solver;
+		solver.compute( (subroot->M.transpose() * subroot->M) );
+
+		MyMatrixXf result = solver.solve( subroot->M.transpose() * E );
+
+		int pts_size = subroot->pts_index.size();
+
+		for (int i = 0; i != pts_size; i++)
+		{
+			double x, y, z;
+
+			if( fabs( result(i, 0) ) < 1e-10 )
+			{
+				x = 0;
+			}else
+			{
+				x = result(i, 0);
+			}
+
+			if( fabs( result(i, 1) ) < 1e-10 )
+			{
+				y = 0;
+			}else
+			{
+				y = result(i, 1);
+			}
+
+			if( fabs( result(i, 2) ) < 1e-10 )
+			{
+				z = 0;
+			}else
+			{
+				z = result(i, 2);
+			}
+
+			MyVector3f vi = MyVector3f(x, y, z);
+			subroot->pts[i] = vi;
+		}
+
+	}else
+	{
+		// 如果没有blending的过程，则平均
+		std::vector<int> cnt;
+
+		cnt.assign( size, 0);
+
+		for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
+		{
+			FaceNode *node_i = subroot->next[i];
+			int pts_size = node_i->pts_index.size();
+
+			for (int j = 0; j != pts_size; j++)
+			{
+				int idx = node_i->pts_index[j];
+				int r_idx = subroot->r_idx[ idx ];
+
+				cnt[r_idx] += 1;
+
+				subroot->pts[ r_idx ] += node_i->pts[j];
+			}
+
+		}
+
+		/**** 对于重复的点的坐标取平均值 ***/
+		for (int i = 0; i != size; i++)
+		{
+
+			subroot->pts[ i ]  /= cnt[i];
+
+		}
+	}
+}
+
+void MsInterpolation::pre_blending_process( FaceNode * subroot )
+{
+	bool leaf_node = true;
+
+	for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
+	{
+		if( subroot->next[i])
+		{
+			leaf_node = false;
+			break;
+		}
+	}
+
+	if( leaf_node )
+	{
+		return ;
+	}
+
+
+	/*** 先统计子节点的边向量 ***/
+	std::vector<Pair> *edges_vector = subroot->edges_vector;
 
 	for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
 	{
 		FaceNode *node_i = subroot->next[i];
-		int pts_size = node_i->pts_index.size();
+		int nr_face = node_i->idx.size();
 
-		for (int j = 0; j != pts_size; j++)
+		/*** 确保边向量起点索引小于终点索引 ***/
+		for (int j = 0; j != nr_face; j++)
 		{
-			int idx = node_i->pts_index[j];
-			int r_idx = subroot->r_idx[ idx ];
+			int face_idx = node_i->idx[j];
 
-			cnt[r_idx] += 1;
+			MyMesh::FaceHalfedgeIter fe_iter;
 
-			subroot->pts[ r_idx ] += node_i->pts[j];
+			for (fe_iter = m_mesh.fh_begin( MyFaceHandle(face_idx) ); fe_iter; ++fe_iter  )
+			{
+				int from = m_mesh.from_vertex_handle( fe_iter ).idx();
+				int to = m_mesh.to_vertex_handle( fe_iter ).idx();
+
+				if( from > to )
+				{
+					std::swap( from, to);
+				}
+
+				edges_vector[i].push_back( Pair(from, to ) );
+			}
 		}
-
 	}
 
-	/**** 对于重复的点的坐标取平均值 ***/
-	for (int i = 0; i != size; i++)
+
+	/*** 去重 ***/
+	int nr_cond = 0; // 约束条件个数
+	for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
 	{
+		std::sort(edges_vector[i].begin(), edges_vector[i].end());
 
-		subroot->pts[ i ]  /= cnt[i];
+		std::vector<Pair>::iterator end_iter;
 
+		end_iter = std::unique(edges_vector[i].begin(), edges_vector[i].end() );
+
+		edges_vector[i].erase( end_iter, edges_vector[i].end() );
+
+		nr_cond += edges_vector[i].size();
 	}
 
+	int nr_vertex = subroot->pts_index.size();
+	subroot->M.resize( nr_cond + 1, nr_vertex);
+
+	subroot->M.setZero();// 必要的
+
+	int m = 0; 
+	for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
+	{
+		int pair_size = edges_vector[i].size();
+
+		for (int j = 0; j != pair_size; j++)
+		{
+			int from = edges_vector[i][j].a;
+			int to = edges_vector[i][j].b;
+
+			//local index
+			from = subroot->r_idx[from];
+			to = subroot->r_idx[to];
+
+	        subroot->M.insert(m, from) = 1;
+			subroot->M.insert(m, to) = -1;
+
+			m++;
+		}
+	}
+
+	subroot->M.insert(m, 0) = 1;
+
+	for (int i = 0; i != NR_MIN_PATCH_PER_LEVEL; i++)
+	{
+		pre_blending_process(subroot->next[i]);
+	}
 }

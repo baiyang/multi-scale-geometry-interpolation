@@ -245,7 +245,7 @@ void MultiRegistration::init()
 		}
 
 		MyMatrixXf diff = R - last_R;
-		if( fabs( diff.maxCoeff() ) < 1 * 1e-2 && fabs( diff.minCoeff() ) < 1 * 1e-2 )
+		if( fabs( diff.maxCoeff() ) < 1 * 1e-5 && fabs( diff.minCoeff() ) < 1 * 1e-5 )
 		{
 			break;
 		}
